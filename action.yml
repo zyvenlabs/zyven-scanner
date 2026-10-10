@@ -1,7 +1,8 @@
 name: Zyven Watch scan
 description: >-
-  Scans the checked-out repository with zyven-scanner and sends its SBOM, dependency scope and
-  deployment facts to Zyven Watch. Source code stays in the runner.
+  Scans the checked-out repository with zyven-scanner and sends its SBOM, dependency scope,
+  deployment facts, target platforms, the npm and PyPI dependencies the code imports and Go
+  reachability to Zyven Watch. Source code stays in the runner.
 inputs:
   product:
     description: The product id in Zyven Watch.
@@ -21,9 +22,25 @@ inputs:
   path:
     description: The directory to scan, relative to the workspace.
     default: '.'
+  targets:
+    description: >-
+      Every platform the product ships for, as goos/goarch separated by spaces (e.g. "linux/amd64
+      linux/arm64"). govulncheck runs once per target; empty states no platform, and the platform
+      and Go facts on each finding stay unknown. Nothing is read from the job's GOOS and GOARCH.
+    default: ''
+  go-tags:
+    description: >-
+      The build tags the Go build uses, comma-separated; "none" declares that the build uses no
+      tags. Empty leaves them undeclared. With cgo, they let govulncheck see the files the build
+      compiles; without both, its results on each finding stay unknown. Nothing is read from the
+      job's GOFLAGS.
+    default: ''
+  cgo:
+    description: The build's CGO_ENABLED, 0 or 1. Nothing is read from the job's CGO_ENABLED.
+    default: ''
   image:
     description: The scanner image.
-    default: ghcr.io/zyvenlabs/zyven-scanner:0.1
+    default: ghcr.io/zyvenlabs/zyven-scanner:0.2
 runs:
   using: composite
   steps:
@@ -36,9 +53,18 @@ runs:
         VERSION: ${{ inputs.version }}
         RELEASED: ${{ inputs.released }}
         SCAN_PATH: ${{ inputs.path }}
+        TARGETS: ${{ inputs.targets }}
+        GO_TAGS: ${{ inputs.go-tags }}
+        CGO: ${{ inputs.cgo }}
         IMAGE: ${{ inputs.image }}
       run: |
         args=(--product "$PRODUCT" --version "$VERSION")
         if [ "$RELEASED" = "true" ]; then args+=(--released); fi
+        for t in $TARGETS; do args+=(--target "$t"); done
+        if [ "$GO_TAGS" = none ]; then args+=(--go-tags ""); elif [ -n "$GO_TAGS" ]; then args+=(--go-tags "$GO_TAGS"); fi
+        if [ -n "$CGO" ]; then args+=(--cgo "$CGO"); fi
+        # The module settings of the job (proxy, -mod), so govulncheck loads the module as the job
+        # does; the build's target, tags and cgo come only from the inputs above.
         docker run --rm -e ZYVEN_API_KEY -e ZYVEN_API_URL -e GITHUB_REF -e GITHUB_SHA \
+          -e GOFLAGS -e GOPROXY -e GOPRIVATE -e GONOSUMDB \
           -v "$GITHUB_WORKSPACE/$SCAN_PATH:/src:ro" "$IMAGE" /src "${args[@]}"
